@@ -1,8 +1,8 @@
 from http import HTTPStatus
 import asyncio
-import time
 from json import dumps
 from datetime import datetime
+from functools import wraps
 
 from fastapi import FastAPI
 
@@ -25,8 +25,36 @@ app = FastAPI()
 
 user_buffer = {}
 
+
+def async_debounce(wait):
+    def decorator(func):
+        task = None
+
+        @wraps(func)
+        async def debounced(*args, **kwargs):
+            nonlocal task
+
+            async def call_func():
+                await asyncio.sleep(wait)
+                await func(*args, **kwargs)
+
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    print("task canceling error")
+
+            task = asyncio.create_task(call_func())
+            return task
+
+        return debounced
+
+    return decorator
+
+
+@async_debounce(wait=10)
 async def process_buffer(user_id):
-    await asyncio.sleep(5)
     messages = user_buffer.pop(user_id, [])
     if messages:
         #supabase
@@ -38,7 +66,7 @@ async def process_buffer(user_id):
         #pinecone
         upsert_data = [{"_id": f'message{i}', "__default__": text} for i, text in enumerate(messages, start=1)]
         index.upsert_records(user_id, upsert_data)
-        time.sleep(10)
+        await asyncio.sleep(10)
         stats = index.describe_index_stats()
         print(stats)
         print(f'Processando mensagens {response}')
@@ -47,6 +75,6 @@ async def process_buffer(user_id):
 @app.post("/message", status_code= HTTPStatus.OK)
 async def message(user_id: int, message: str):
     user_buffer.setdefault(user_id, []).append(message)
-    asyncio.create_task(process_buffer(user_id))
+    process_buffer(user_id)
     return {"status": "Mensagem adicionada"}
 
